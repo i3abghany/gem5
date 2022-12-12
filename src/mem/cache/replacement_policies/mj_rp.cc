@@ -105,7 +105,7 @@ void MJRP::touch(const std::shared_ptr<ReplacementData>& replacement_data,
 
         if (diff <= 127)
         {
-            int rdp_value = rdp.get_value_of(pcSignature);
+            int rdp_value = rdp.get_value_of(last_sig);
             int new_val = 0;
 
             if (rdp_value == std::numeric_limits<uint8_t>::max())
@@ -115,7 +115,7 @@ void MJRP::touch(const std::shared_ptr<ReplacementData>& replacement_data,
                               ? std::min(1, diff / 16)
                               : -std::min(1, diff / 16);
 
-            rdp.set_value_of(pcSignature, new_val);
+            rdp.set_value_of(last_sig, new_val);
             sampled_cache.at(sampled_set, sampled_way).valid = false;
         }
 
@@ -135,10 +135,10 @@ void MJRP::touch(const std::shared_ptr<ReplacementData>& replacement_data,
             int set_timestamp = etr_counters.get_set_timestamp(sampled_set);
             int diff = 0;
             if (set_timestamp > last_timestamp)
-                diff = set_timestamp > last_timestamp;
+                diff = set_timestamp - last_timestamp;
             else
             {
-                diff = set_timestamp + (1 << TIMESTAMP_BITS);
+                diff = set_timestamp + (1 << TIMESTAMP_WIDTH);
                 diff -= last_timestamp;
             }
             if (diff > INF_RD)
@@ -155,52 +155,44 @@ void MJRP::touch(const std::shared_ptr<ReplacementData>& replacement_data,
         }
         penalize_block(sampled_set, lru_way);
 
-        for (int w = 0; w < SAMPLED_CACHE_WAYS; w++)
+        auto& invalidEntry = sampled_cache.get_invalid_entry(sampled_set);
+        if (!invalidEntry.valid)
         {
-            auto& tmpEntry = sampled_cache.at(sampled_set, w);
-            if (!tmpEntry.valid)
-            {
-                tmpEntry.valid = true;
-                tmpEntry.last_pc_signature = pcSignature;
-                tmpEntry.tag = sampled_tag;
-                tmpEntry.last_access_timestamp =
-                    etr_counters.get_set_timestamp(set);
-                break;
-            }
+            invalidEntry.valid = true;
+            invalidEntry.last_pc_signature = pcSignature;
+            invalidEntry.tag = sampled_tag;
+            invalidEntry.last_access_timestamp =
+                etr_counters.get_set_timestamp(set);
         }
-        etr_counters.increment_timestamp(sampled_set);
+        etr_counters.progress_set_clock(sampled_set);
     }
 out:
 
-    if (etr_counters.get_current_set_clock(set) == GRANULARITY)
+    if (etr_counters.get_current_set_clock(set) == CONSTANT_FACTOR_F)
     {
         for (int w = 0; w < LLC_NUM_WAYS; w++)
         {
             if ((uint32_t)w != way &&
                 abs(etr_counters.get_estimated_time_remaining(set, w)) <
                     INF_ETR)
-                etr_counters.downgrade(set, w);
+                etr_counters.age_block(set, w);
         }
         etr_counters.reset_set_clock(set);
     }
     etr_counters.set_current_set_clock(
         set, etr_counters.get_current_set_clock(set) + 1);
 
-    if (way < LLC_NUM_WAYS)
+    if (rdp.get_value_of(pcSignature) == std::numeric_limits<uint8_t>::max())
     {
-        if (rdp.get_value_of(pcSignature) ==
-            std::numeric_limits<uint8_t>::max())
-        {
-            etr_counters.set_estimated_time_remaining(set, way, 0);
-        }
+        etr_counters.set_estimated_time_remaining(set, way, 0);
+    }
+    else
+    {
+        if (rdp.get_value_of(pcSignature) > MAX_RD)
+            etr_counters.set_estimated_time_remaining(set, way, INF_ETR);
         else
-        {
-            if (rdp.get_value_of(pcSignature) > MAX_RD)
-                etr_counters.set_estimated_time_remaining(set, way, INF_ETR);
-            else
-                etr_counters.set_estimated_time_remaining(
-                    set, way, rdp.get_value_of(pcSignature) / GRANULARITY);
-        }
+            etr_counters.set_estimated_time_remaining(
+                set, way, rdp.get_value_of(pcSignature) / CONSTANT_FACTOR_F);
     }
 
     warn("EXIT TOUCH\n");
@@ -250,7 +242,7 @@ void MJRP::reset(const std::shared_ptr<ReplacementData>& replacement_data,
 
         if (diff <= 127)
         {
-            int rdp_value = rdp.get_value_of(pcSignature);
+            int rdp_value = rdp.get_value_of(last_sig);
             int new_val = 0;
 
             if (rdp_value == std::numeric_limits<uint8_t>::max())
@@ -260,7 +252,7 @@ void MJRP::reset(const std::shared_ptr<ReplacementData>& replacement_data,
                               ? std::min(1, diff / 16)
                               : -std::min(1, diff / 16);
 
-            rdp.set_value_of(pcSignature, new_val);
+            rdp.set_value_of(last_sig, new_val);
             sampled_cache.at(sampled_set, sampled_way).valid = false;
         }
 
@@ -280,10 +272,10 @@ void MJRP::reset(const std::shared_ptr<ReplacementData>& replacement_data,
             int set_timestamp = etr_counters.get_set_timestamp(sampled_set);
             int diff = 0;
             if (set_timestamp > last_timestamp)
-                diff = set_timestamp > last_timestamp;
+                diff = set_timestamp - last_timestamp;
             else
             {
-                diff = set_timestamp + (1 << TIMESTAMP_BITS);
+                diff = set_timestamp + (1 << TIMESTAMP_WIDTH);
                 diff -= last_timestamp;
             }
             if (diff > INF_RD)
@@ -300,52 +292,44 @@ void MJRP::reset(const std::shared_ptr<ReplacementData>& replacement_data,
         }
         penalize_block(sampled_set, lru_way);
 
-        for (int w = 0; w < SAMPLED_CACHE_WAYS; w++)
+        auto& invalidEntry = sampled_cache.get_invalid_entry(sampled_set);
+        if (!invalidEntry.valid)
         {
-            auto& tmpEntry = sampled_cache.at(sampled_set, w);
-            if (!tmpEntry.valid)
-            {
-                tmpEntry.valid = true;
-                tmpEntry.last_pc_signature = pcSignature;
-                tmpEntry.tag = sampled_tag;
-                tmpEntry.last_access_timestamp =
-                    etr_counters.get_set_timestamp(set);
-                break;
-            }
+            invalidEntry.valid = true;
+            invalidEntry.last_pc_signature = pcSignature;
+            invalidEntry.tag = sampled_tag;
+            invalidEntry.last_access_timestamp =
+                etr_counters.get_set_timestamp(set);
         }
-        etr_counters.increment_timestamp(sampled_set);
+        etr_counters.progress_set_clock(set);
     }
 out:
 
-    if (etr_counters.get_current_set_clock(set) == GRANULARITY)
+    if (etr_counters.get_current_set_clock(set) == CONSTANT_FACTOR_F)
     {
         for (int w = 0; w < LLC_NUM_WAYS; w++)
         {
             if ((uint32_t)w != way &&
                 abs(etr_counters.get_estimated_time_remaining(set, w)) <
                     INF_ETR)
-                etr_counters.downgrade(set, w);
+                etr_counters.age_block(set, w);
         }
         etr_counters.reset_set_clock(set);
     }
     etr_counters.set_current_set_clock(
         set, etr_counters.get_current_set_clock(set) + 1);
 
-    if (way < LLC_NUM_WAYS)
+    if (rdp.get_value_of(pcSignature) == std::numeric_limits<uint8_t>::max())
     {
-        if (rdp.get_value_of(pcSignature) ==
-            std::numeric_limits<uint8_t>::max())
-        {
-            etr_counters.set_estimated_time_remaining(set, way, 0);
-        }
+        etr_counters.set_estimated_time_remaining(set, way, 0);
+    }
+    else
+    {
+        if (rdp.get_value_of(pcSignature) > MAX_RD)
+            etr_counters.set_estimated_time_remaining(set, way, INF_ETR);
         else
-        {
-            if (rdp.get_value_of(pcSignature) > MAX_RD)
-                etr_counters.set_estimated_time_remaining(set, way, INF_ETR);
-            else
-                etr_counters.set_estimated_time_remaining(
-                    set, way, rdp.get_value_of(pcSignature) / GRANULARITY);
-        }
+            etr_counters.set_estimated_time_remaining(
+                set, way, rdp.get_value_of(pcSignature) / CONSTANT_FACTOR_F);
     }
 
     warn("EXIT RESET\n");

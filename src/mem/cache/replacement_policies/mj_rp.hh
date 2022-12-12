@@ -49,29 +49,29 @@
 #define LOG2_BLOCK_SIZE 6
 #define LLC_NUM_SETS ((1024 * 1024) / (16 * 64))
 #define LLC_NUM_WAYS 16
-
+#define LLC_NUM_SETS_LOG_2 10
 #define LLC_BLOCK_SIZE 64
 #define LLC_BLOCK_SIZE_LOG_2 6
 
-#define PC_SIG_MASK 0x3ff
+#define INF_ETR 15
+#define MAX_ETR_CLOCK 8
+#define CONSTANT_FACTOR_F 8
 
-constexpr int HISTORY = 8;
-constexpr int GRANULARITY = 8;
+#define INF_RD 127
+#define MAX_RD 104
 
-constexpr int INF_RD = LLC_NUM_WAYS * HISTORY - 1;
-constexpr int INF_ETR = (LLC_NUM_WAYS * HISTORY / GRANULARITY) - 1;
-constexpr int MAX_RD = INF_RD - 22;
+#define PC_SIG_MASK 0x7ff
 
-constexpr int LOG2_LLC_SET = log2(LLC_NUM_SETS);
-constexpr int LOG2_LLC_SIZE =
-    LOG2_LLC_SET + log2(LLC_NUM_WAYS) + LOG2_BLOCK_SIZE;
-constexpr int LOG2_SAMPLED_SETS = LOG2_LLC_SIZE - 16;
+#define CONSTANT_FACTOR_F 8
 
-constexpr int SAMPLED_CACHE_WAYS = 5;
-constexpr int LOG2_SAMPLED_CACHE_SETS = 4;
-constexpr int SAMPLED_CACHE_TAG_BITS = 31 - LOG2_LLC_SIZE;
-constexpr int PC_SIGNATURE_BITS = LOG2_LLC_SIZE - 10;
-constexpr int TIMESTAMP_BITS = 8;
+#define LOG2_LLC_SIZE 20
+#define LOG2_SAMPLED_SETS 4
+#define NUM_SAMPLED_CACHE_SETS 16
+
+#define SAMPLED_CACHE_WAYS 5
+#define SAMPLED_CACHE_SETS 16
+#define SAMPLED_CACHE_TAG_BITS 11
+#define TIMESTAMP_WIDTH 8
 
 namespace gem5
 {
@@ -121,10 +121,9 @@ class Counters
         return set_timestamp[set];
     }
 
-    void increment_timestamp(uint32_t set)
+    void progress_set_clock(uint32_t set)
     {
-        set_timestamp[set] += 1;
-        set_timestamp[set] %= (1 << TIMESTAMP_BITS);
+        set_timestamp[set] = (set_timestamp[set] + 1) % 256;
     }
 
     int get_estimated_time_remaining(uint32_t set, uint32_t way) const
@@ -138,7 +137,7 @@ class Counters
         etr_entries[set][way] = etr;
     }
 
-    void downgrade(uint32_t set, uint32_t way)
+    void age_block(uint32_t set, uint32_t way)
     {
         assert(set < LLC_NUM_SETS && way < LLC_NUM_WAYS);
         etr_entries[set][way] -= 1;
@@ -194,10 +193,13 @@ class ReuseDistancePredictor
 
 struct SampledCacheEntry
 {
+    static SampledCacheEntry& def()
+    {
+        static SampledCacheEntry ret = SampledCacheEntry();
+        ret.valid = true;
+        return ret;
+    }
     bool valid;
-
-    // FIXME: Assuming a larger timestamp so we don't have to check overflow.
-    // The paper demonstrates the usage of 1 byte
     int last_access_timestamp;
     uint64_t last_pc_signature;
     uint64_t tag;
@@ -208,11 +210,23 @@ class SampledCache
   public:
     bool is_set_to_sample(uint32_t set)
     {
-        int mask_length = LOG2_LLC_SET - LOG2_SAMPLED_SETS;
+        int mask_length = LLC_NUM_SETS_LOG_2 - LOG2_SAMPLED_SETS;
         int mask = (1 << mask_length) - 1;
-        return (set & mask) == ((set >> (LOG2_LLC_SET - mask_length)) & mask);
+        return (set & mask) ==
+               ((set >> (LLC_NUM_SETS_LOG_2 - mask_length)) & mask);
     }
 
+    SampledCacheEntry& get_invalid_entry(uint32_t set)
+    {
+        for (int i = 0; i < SAMPLED_CACHE_WAYS; i++)
+        {
+            if (!entries[set][i].valid)
+                return entries[set][i];
+        }
+        return SampledCacheEntry::def();
+    }
+
+    bool valid;
     void init()
     {
         warn("ENTER Sampled Cache INIT\n");
@@ -223,9 +237,8 @@ class SampledCache
             if (is_set_to_sample(i))
             {
                 // entries[i] = std::vector<SampledCacheEntry>(n_ways());
-                int modifier = 1 << LOG2_LLC_SET;
-                int limit = 1 << LOG2_SAMPLED_CACHE_SETS;
-                for (int j = 0; j < limit; j++)
+                int modifier = 1 << LLC_NUM_SETS_LOG_2;
+                for (int j = 0; j < NUM_SAMPLED_CACHE_SETS; j++)
                 {
                     entries[i + modifier * j] =
                         std::vector<SampledCacheEntry>(n_ways());
@@ -304,9 +317,6 @@ class MJRP : public Base
         uint64_t blkAddr;
         uint64_t way;
         uint64_t set;
-        /**
-         * Default constructor. Invalidate data.
-         */
         MJReplData() : lastTouchTick(0), valid(false) {}
     };
 

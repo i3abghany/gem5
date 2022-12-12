@@ -192,7 +192,7 @@ if not ('CC' in main and 'CXX' in main):
     error("No C++ compiler installed (package g++ on Ubuntu and RedHat)")
 
 # Find default configuration & binary.
-Default(environ.get('M5_DEFAULT_BINARY', 'build/ARM/gem5.debug'))
+Default(environ.get('M5_DEFAULT_BINARY', 'build/X86/gem5.fast'))
 
 
 ########################################################################

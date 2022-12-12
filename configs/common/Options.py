@@ -179,6 +179,10 @@ def addNoISAOptions(parser):
         "Direct parameters of the root object are not accessible, "
         "only parameters of its children.")
 
+    parser.add_argument("--l2_repl", default="LRURP",
+                        choices=ObjectList.rp_list.get_names(),
+                        help = "replacement policy for l2")
+
 # Add common options that assume a non-NULL ISA.
 
 
