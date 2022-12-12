@@ -65,9 +65,25 @@ MJRP::MJRP(const Params& p) : Base(p)
 
 void MJRP::invalidate(const std::shared_ptr<ReplacementData>& replacement_data)
 {
-    // Reset last touch timestamp
-    std::static_pointer_cast<MJReplData>(replacement_data)->lastTouchTick =
-        Tick(0);
+    auto set = std::static_pointer_cast<MJReplData>(replacement_data)->set;
+    auto way = std::static_pointer_cast<MJReplData>(replacement_data)->way;
+
+    if (sampled_cache.is_set_to_sample(set))
+    {
+        auto fullAddr =
+            std::static_pointer_cast<MJReplData>(replacement_data)->blkAddr;
+        auto sampled_set = sampled_cache.get_set(fullAddr);
+        auto sampled_tag = sampled_cache.get_tag(fullAddr);
+        auto sampled_way = sampled_cache.is_present(sampled_tag, sampled_set);
+        if (sampled_way == -1)
+            return;
+        auto& entry = sampled_cache.at(sampled_set, sampled_way);
+        if (!entry.valid)
+            return;
+        entry.valid = false;
+        rdp.set_value_of(entry.last_pc_signature, MAX_RD);
+        etr_counters.set_estimated_time_remaining(set, way, INF_ETR);
+    }
 }
 
 void MJRP::touch(
