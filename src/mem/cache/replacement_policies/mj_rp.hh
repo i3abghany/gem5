@@ -71,6 +71,7 @@
 #define SAMPLED_CACHE_WAYS 5
 #define SAMPLED_CACHE_SETS 16
 #define SAMPLED_CACHE_TAG_BITS 11
+#define LOG2_SAMPLED_CACHE_SETS 4
 #define TIMESTAMP_WIDTH 8
 
 namespace gem5
@@ -121,7 +122,7 @@ class Counters
         return set_timestamp[set];
     }
 
-    void progress_set_clock(uint32_t set)
+    void advance_set_clock(uint32_t set)
     {
         set_timestamp[set] = (set_timestamp[set] + 1) % 256;
     }
@@ -230,41 +231,54 @@ class SampledCache
     void init()
     {
         warn("ENTER Sampled Cache INIT\n");
-        sampled_sets = 0;
+        std::vector<int> sampled_sets;
         sampled_ways = 5;
         for (uint32_t i = 0; i < LLC_NUM_SETS; i++)
-        {
             if (is_set_to_sample(i))
+                sampled_sets.push_back(i);
+
+        for (int s : sampled_sets)
+        {
+            // entries[i] = std::vector<SampledCacheEntry>(n_ways());
+            int modifier = 1 << LLC_NUM_SETS_LOG_2;
+            for (int j = 0; j < NUM_SAMPLED_CACHE_SETS; j++)
             {
-                // entries[i] = std::vector<SampledCacheEntry>(n_ways());
-                int modifier = 1 << LLC_NUM_SETS_LOG_2;
-                for (int j = 0; j < NUM_SAMPLED_CACHE_SETS; j++)
-                {
-                    entries[i + modifier * j] =
-                        std::vector<SampledCacheEntry>(n_ways());
-                    sampled_sets++;
-                }
+                entries[s + modifier * j] =
+                    std::vector<SampledCacheEntry>(SAMPLED_CACHE_WAYS);
             }
         }
+
+        for (auto s : entries)
+            warn("SAMPLED SET: %d\n", s.first);
+
         warn("EXIT Sampled Cache INIT\n");
     }
 
     /*
-    Sampled Cache is indexed using a concatenation of the 5 set id bits that
-    identify the 32 sampled sets and the bits [3:0] of the block address tag
-    TODO: only sample 32 sets.
+        Sampled Cache is indexed using a concatenation of the 5 set id bits
+       that identify the 32 sampled sets and the bits [3:0] of the block
+       address tag
+        TODO: only sample 32 sets.
     */
-    uint64_t get_set(uint64_t pc) const
+    uint64_t get_set(uint64_t addr) const
     {
         // uint64_t sampled_set_bits = log2(n_sampled_sets());
-        uint64_t sampled_set_mask = (n_sampled_sets() - 1) << LOG2_BLOCK_SIZE;
-        return (pc & sampled_set_mask) >> LOG2_BLOCK_SIZE;
+        // uint64_t sampled_set_mask = (n_sampled_sets() - 1) <<
+        // LOG2_BLOCK_SIZE; return (pc & sampled_set_mask) >> LOG2_BLOCK_SIZE;
+        addr = addr >> LOG2_BLOCK_SIZE;
+        addr = (addr << (64 - (LOG2_SAMPLED_CACHE_SETS + 10))) >>
+               (64 - (LOG2_SAMPLED_CACHE_SETS + 10));
+        return addr;
     }
 
-    uint64_t get_tag(uint64_t pc) const
+    uint64_t get_tag(uint64_t addr) const
     {
-        uint64_t tag_bits = 64 - LOG2_BLOCK_SIZE - log2(n_sampled_sets());
-        return (pc & ((1 << tag_bits) - 1)) >> tag_bits;
+        // uint64_t tag_bits = 64 - LOG2_BLOCK_SIZE - log2(n_sampled_sets());
+        // return (pc & ((1 << tag_bits) - 1)) >> tag_bits;
+        addr >>= 20;
+        addr = (addr << (64 - SAMPLED_CACHE_TAG_BITS)) >>
+               (64 - SAMPLED_CACHE_TAG_BITS);
+        return addr;
     }
 
     int is_present(uint64_t tag, uint64_t set)
@@ -286,13 +300,13 @@ class SampledCache
     }
 
     uint32_t n_ways() const { return sampled_ways; }
-    uint32_t n_sampled_sets() const { return sampled_sets; }
 
     SampledCacheEntry& at(uint32_t set, uint32_t way)
     {
         // assert(way < n_ways());
-        warn("ENTER SAMPLED_CACHE_AT\n");
-        assert(is_set_to_sample(set));
+        warn("ENTER SAMPLED_CACHE_AT: set: %d, way: %d\n", set, way);
+        assert(entries.find(set) != std::end(entries));
+        assert(entries[set].size() > way);
         auto& ret = entries[set][way];
         warn("ENTER SAMPLED_CACHE_AT\n");
         return ret;
@@ -301,7 +315,6 @@ class SampledCache
   private:
     std::unordered_map<uint32_t, std::vector<SampledCacheEntry>> entries;
     uint32_t sampled_ways;
-    uint32_t sampled_sets;
 };
 
 class MJRP : public Base
@@ -315,9 +328,13 @@ class MJRP : public Base
         bool valid;
         uint64_t generatingPCSignature;
         uint64_t blkAddr;
-        uint64_t way;
         uint64_t set;
+        uint64_t way;
         MJReplData() : lastTouchTick(0), valid(false) {}
+        MJReplData(int s, int w)
+            : lastTouchTick(0), valid(false), set(s), way(w)
+        {
+        }
     };
 
   public:
@@ -371,26 +388,30 @@ class MJRP : public Base
      * @return A shared pointer to the new replacement data.
      */
     std::shared_ptr<ReplacementData> instantiateEntry() override;
+    std::shared_ptr<ReplacementData> instantiateEntry(int set,
+                                                      int way) override;
 
-    void penalize_block(uint64_t set, uint64_t way)
-    {
-        if (!sampled_cache.at(set, way).valid)
-            return;
-        if (rdp.get_value_of(sampled_cache.at(set, way).last_pc_signature) !=
-            std::numeric_limits<uint8_t>::max())
-        {
-            rdp.set_value_of(
-                sampled_cache.at(set, way).last_pc_signature,
-                rdp.get_value_of(
-                    sampled_cache.at(set, way).last_pc_signature) +
-                    1);
-            if (rdp.get_value_of(
-                    sampled_cache.at(set, way).last_pc_signature) > INF_RD)
-                rdp.set_value_of(sampled_cache.at(set, way).last_pc_signature,
-                                 INF_RD);
-        }
-        sampled_cache.at(set, way).valid = false;
-    }
+    // void penalize_block(uint64_t set, uint64_t way)
+    // {
+    //     if (!sampled_cache.at(set, way).valid)
+    //         return;
+    //     if (rdp.get_value_of(sampled_cache.at(set, way).last_pc_signature)
+    //     !=
+    //         std::numeric_limits<uint8_t>::max())
+    //     {
+    //         rdp.set_value_of(
+    //             sampled_cache.at(set, way).last_pc_signature,
+    //             rdp.get_value_of(
+    //                 sampled_cache.at(set, way).last_pc_signature) +
+    //                 1);
+    //         if (rdp.get_value_of(
+    //                 sampled_cache.at(set, way).last_pc_signature) > INF_RD)
+    //             rdp.set_value_of(sampled_cache.at(set,
+    //             way).last_pc_signature,
+    //                              INF_RD);
+    //     }
+    //     sampled_cache.at(set, way).valid = false;
+    // }
 
   private:
     SampledCache sampled_cache;

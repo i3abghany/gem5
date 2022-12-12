@@ -105,7 +105,7 @@ CacheMemory::init()
     for (int i = 0; i < m_cache_num_sets; i++) {
         for ( int j = 0; j < m_cache_assoc; j++) {
             replacement_data[i][j] =
-                                m_replacementPolicy_ptr->instantiateEntry();
+                m_replacementPolicy_ptr->instantiateEntry(i, j);
         }
     }
 }
